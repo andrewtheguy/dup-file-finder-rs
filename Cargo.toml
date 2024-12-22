@@ -1,0 +1,12 @@
+[package]
+name = "hashfile"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dotenvy = "0.15.7"
+sea-query = "0.32.1"
+sea-query-binder = { version = "0.7.0", features = ["sqlx-sqlite"] }
+sqlx = { version = "0.8.2", features = ["sqlite","runtime-tokio"] }
+tokio = { version = "1.42.0", features = ["full"] }
+twox-hash = "2.1.0"
