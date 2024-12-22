@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 dotenvy = "0.15.7"
+log = "0.4.22"
 sea-query = "0.32.1"
 sea-query-binder = { version = "0.7.0", features = ["sqlx-sqlite"] }
 sqlx = { version = "0.8.2", features = ["sqlite","runtime-tokio"] }

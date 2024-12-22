@@ -459,6 +459,7 @@ name = "hashfile"
 version = "0.1.0"
 dependencies = [
  "dotenvy",
+ "log",
  "sea-query",
  "sea-query-binder",
  "sqlx",

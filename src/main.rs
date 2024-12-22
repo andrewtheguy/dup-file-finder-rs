@@ -9,6 +9,7 @@ use std::hash::Hasher;
 use sea_query::{ColumnDef, Expr, Func, Iden, OnConflict, Order, Query, SqliteQueryBuilder, Table};
 use sea_query_binder::SqlxBinder;
 use sqlx::{Pool, Row, SqlitePool};
+use log::{debug, info};
 
 fn hash_file(path: &PathBuf) -> io::Result<u64> {
     // Open the file
@@ -52,7 +53,7 @@ async fn save_file_hash_assoc(path: &PathBuf, pool: &Pool<sqlx::Sqlite>,existing
 
     let row = sqlx::query_with(&sql, values).execute(pool).await?;
     let id: i64 = row.last_insert_rowid();
-    eprintln!("Insert into file: last_insert_id = {id}\n");
+    debug!("Insert into file: last_insert_id = {id}\n");
     Ok(())
 }
 
@@ -81,16 +82,16 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
 
     let row = sqlx::query_with(&sql, values).execute(pool).await?;
     let mut id: i64 = row.last_insert_rowid();
-    eprintln!("Insert into file hash: last_insert_id = {id}\n");
+    debug!("Insert into file hash: last_insert_id = {id}\n");
     if id == 0 {
-        eprintln!("File already exists in the database");
+        //debug!("File already exists in the database");
         let (sql2, values2) = Query::select()
         .columns([FileHash::Id])
         .from(FileHash::Table)
         .and_where(Expr::col(FileHash::FileSize).eq(filesize).and(Expr::col(FileHash::Hash).eq(format!("{:x}", hash)))).build_sqlx(SqliteQueryBuilder);
         let row2 = sqlx::query_with(&sql2, values2).fetch_one(pool).await?;
         id = row2.get("id");
-        eprintln!("File already exists in the database: id = {id}\n");
+        debug!("File already exists in the database: id = {id}\n");
     }
     save_file_hash_assoc(path,pool,id as u64).await?;
     Ok(())
@@ -154,7 +155,7 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
             eprintln!("File: {:?}", path);
             run(&path.to_path_buf(),&pool).await?;
         } else if path.is_dir() {
-            eprintln!("Directory: {:?}", path);
+            info!("Directory: {:?}", path);
         }
     }
 
