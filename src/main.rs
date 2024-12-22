@@ -1,4 +1,5 @@
 use dotenvy::dotenv;
+use walkdir::WalkDir;
 use std::path::PathBuf;
 use std::{env, fs};
 use std::fs::File;
@@ -128,19 +129,34 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
     let pool = SqlitePool::connect(&env::var("DATABASE_URL")?).await?;
 
 
-    // Read the directory
-    for entry in fs::read_dir(path)? {
-        let entry = entry?; // Handle the Result
-        let path = entry.path();
+    // // Read the directory
+    // for entry in fs::read_dir(path)? {
+    //     let entry = entry?; // Handle the Result
+    //     let path = entry.path();
         
+    //     if path.is_file() {
+    //         println!("File: {:?}", path);
+    //         run(&path,&pool).await?;
+    //     } else if path.is_dir() {
+    //         println!("Directory: {:?}", path);
+    //     }
+    // }
+
+    // Create a WalkDir iterator
+    for entry in WalkDir::new(path)
+        .follow_links(false) // Do not follow symbolic links
+        .into_iter()
+        .filter_map(Result::ok) // Filter out errors
+    {
+        let path = entry.path();
+
         if path.is_file() {
-            println!("File: {:?}", path);
-            run(&path,&pool).await?;
+            eprintln!("File: {:?}", path);
+            run(&path.to_path_buf(),&pool).await?;
         } else if path.is_dir() {
-            println!("Directory: {:?}", path);
+            eprintln!("Directory: {:?}", path);
         }
     }
-
 
     Ok(())
 }
