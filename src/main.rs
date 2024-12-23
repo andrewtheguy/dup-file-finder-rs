@@ -12,6 +12,13 @@ use sea_query_binder::SqlxBinder;
 use sqlx::{Pool, Row, SqlitePool};
 use log::{debug, info};
 
+fn has_ignore_dir(path: &PathBuf) -> bool {
+    path.components().any(|component| {
+        let dir = component.as_os_str();
+         dir == ".git" || dir == "node_modules"
+    })
+}
+
 fn hash_file(path: &PathBuf) -> io::Result<u64> {
     // Open the file
     let file = File::open(path)?;
@@ -65,6 +72,12 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
     let metadata = fs::metadata(&path)?;
 
     let filesize = metadata.len();
+
+    // skip files with size 0
+    if filesize == 0 {
+        return Ok(());
+    }
+
     let hash  = hash_file(&path)?;
 
     // Create
@@ -154,10 +167,16 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
         .filter_map(Result::ok) // Filter out errors
     {
         let path = entry.path();
+        let path_buf = &path.to_path_buf();
+
+        // Skip the .git directory
+        if has_ignore_dir(path_buf) {
+            continue;
+        }
 
         if path.is_file() {
             eprintln!("File: {:?}", path);
-            run(&path.to_path_buf(),&pool).await?;
+            run(path_buf,&pool).await?;
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
         }
