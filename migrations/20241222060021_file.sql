@@ -5,4 +5,4 @@ create table file (
     hash_id int not null
 );
 
-CREATE UNIQUE INDEX file_hash_assoc_uniq ON file(file_path, hash_id);
+CREATE UNIQUE INDEX file_path_uniq ON file(file_path);

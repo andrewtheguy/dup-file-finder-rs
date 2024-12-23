@@ -38,7 +38,7 @@ fn hash_file(path: &PathBuf) -> io::Result<u64> {
 async fn save_file_hash_assoc(path: &PathBuf, pool: &Pool<sqlx::Sqlite>,existing_hash_id: u64)-> Result<(), Box<dyn std::error::Error>> {
     let (sql, values) = Query::insert()
     .into_table(FileObj::Table)
-    .on_conflict( OnConflict::columns([FileObj::FilePath,FileObj::HashId])
+    .on_conflict( OnConflict::columns([FileObj::FilePath])
         .do_nothing()
         .to_owned(),)
     .columns([
