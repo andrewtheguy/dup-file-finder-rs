@@ -1,5 +1,6 @@
 use dotenvy::dotenv;
 use walkdir::WalkDir;
+use core::panic;
 use std::path::PathBuf;
 use std::{env, fs};
 use std::fs::File;
@@ -36,11 +37,12 @@ fn hash_file(path: &PathBuf) -> io::Result<u64> {
 }
 
 async fn save_file_hash_assoc(path: &PathBuf, pool: &Pool<sqlx::Sqlite>,existing_hash_id: u64)-> Result<(), Box<dyn std::error::Error>> {
+    assert!(existing_hash_id > 0);
     let (sql, values) = Query::insert()
     .into_table(FileObj::Table)
     .on_conflict( OnConflict::columns([FileObj::FilePath])
-        .do_nothing()
-        .to_owned(),)
+        .value(FileObj::HashId, existing_hash_id)
+        .to_owned())
     .columns([
         FileObj::FilePath,
         FileObj::HashId,
@@ -50,6 +52,8 @@ async fn save_file_hash_assoc(path: &PathBuf, pool: &Pool<sqlx::Sqlite>,existing
         existing_hash_id.into(),
     ])
     .build_sqlx(SqliteQueryBuilder);
+
+    //panic!("sql: {}",sql);
 
     let row = sqlx::query_with(&sql, values).execute(pool).await?;
     let id: i64 = row.last_insert_rowid();
