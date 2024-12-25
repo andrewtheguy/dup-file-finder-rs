@@ -63,8 +63,7 @@ async fn save_file_hash_assoc(path: &PathBuf, pool: &Pool<sqlx::Sqlite>,existing
     //panic!("sql: {}",sql);
 
     let row = sqlx::query_with(&sql, values).execute(pool).await?;
-    let id: i64 = row.last_insert_rowid();
-    debug!("Insert into file: last_insert_id = {id}\n");
+
     Ok(())
 }
 
@@ -81,24 +80,8 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
     let hash  = hash_file(&path)?;
     let hex_hash = format!("{:x}", hash);
 
-    // Create
-    let (sql, values) = Query::insert()
-    .into_table(FileHash::Table)
-    .on_conflict( OnConflict::columns([FileHash::FileSize, FileHash::Hash])
-        .do_nothing()
-        .to_owned(),)
-    .columns([
-        FileHash::FileSize,
-        FileHash::Hash,
-    ])
-    .values_panic([
-        filesize.into(),
-        hex_hash.clone().into(),
-        
-    ])
-    .build_sqlx(SqliteQueryBuilder);
 
-    sqlx::query_with(&sql, values).execute(pool).await?;
+
     // let mut id: i64 = row.last_insert_rowid();
     // debug!("Insert into file hash: last_insert_id = {id}\n");
     // if id == 0 {
@@ -106,12 +89,36 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
     let (sql2, values2) = Query::select()
     .columns([FileHash::Id])
     .from(FileHash::Table)
-    .and_where(Expr::col(FileHash::FileSize).eq(filesize).and(Expr::col(FileHash::Hash).eq(hex_hash))).build_sqlx(SqliteQueryBuilder);
-    let row2 = sqlx::query_with(&sql2, values2).fetch_one(pool).await?;
-    let id: u64 = row2.get("id");
-    debug!("File already exists in the database: id = {id}\n");
-    //}
-    save_file_hash_assoc(path,pool,id as u64).await?;
+    .and_where(Expr::col(FileHash::FileSize).eq(filesize).and(Expr::col(FileHash::Hash).eq(hex_hash.clone()))).build_sqlx(SqliteQueryBuilder);
+    let row2 = sqlx::query_with(&sql2, values2).fetch_optional(pool).await?;
+    
+    //debug!("File already exists in the database: id = {id}\n");
+    if(row2.is_some()){
+        let row2 = row2.unwrap();
+        let id: i64 = row2.get(0);
+        debug!("File already exists in the database: id = {id}\n");
+        save_file_hash_assoc(path,pool,id as u64).await?;
+        return Ok(());
+    }else{
+        debug!("File does not exist in the database");
+        // Create
+        let (sql, values) = Query::insert()
+        .into_table(FileHash::Table)
+        .columns([
+            FileHash::FileSize,
+            FileHash::Hash,
+        ])
+        .values_panic([
+            filesize.into(),
+            hex_hash.clone().into(),
+            
+        ])
+        .build_sqlx(SqliteQueryBuilder);
+
+        let row =sqlx::query_with(&sql, values).execute(pool).await?;
+        let id: i64 = row.last_insert_rowid();
+        debug!("Insert into file: last_insert_id = {id}\n");
+    }
     Ok(())
 }
 
