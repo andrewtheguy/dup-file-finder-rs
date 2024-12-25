@@ -123,10 +123,10 @@ async fn file_exists(file_row: &FileObjRow, pool: &Pool<sqlx::Sqlite>) -> Result
     .and_where(Expr::col(FileObj::FilePath).eq(file_row.file_path.to_str().unwrap()).
     and(Expr::col(FileObj::FileSize).eq(file_row.file_size).
     and(Expr::col(FileObj::FileModificationTime).eq(file_row.file_modification_time)))).build_sqlx(SqliteQueryBuilder);
-    eprintln!("sql: {}",sql);
-    eprintln!("values: {:?}",values);
+    //eprintln!("sql: {}",sql);
+    //eprintln!("values: {:?}",values);
     let row = sqlx::query_with(&sql, values).fetch_optional(pool).await?;
-    eprintln!("row: {:?}",row.is_some());
+    //eprintln!("row: {:?}",row.is_some());
     Ok(row.is_some())
 }
 
