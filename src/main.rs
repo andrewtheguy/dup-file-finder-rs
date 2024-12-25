@@ -2,6 +2,7 @@ use dotenvy::dotenv;
 use walkdir::WalkDir;
 use core::panic;
 use std::path::PathBuf;
+use std::time::SystemTime;
 use std::{env, fs};
 use std::fs::File;
 use std::io::{self, BufReader, Read};
@@ -11,6 +12,35 @@ use sea_query::{ColumnDef, Expr, Func, Iden, OnConflict, Order, Query, SqliteQue
 use sea_query_binder::SqlxBinder;
 use sqlx::{Pool, Row, SqlitePool};
 use log::{debug, info};
+
+
+#[derive(Iden)]
+enum FileHash {
+    Table,
+    Id,
+    FileSize,
+    Hash,
+}
+
+
+#[derive(Iden)]
+enum FileObj {
+    #[iden = "file"]
+    Table,
+    Id,
+    FilePath,
+    FileSize,
+    FileModificationTime,
+    HashId,
+}
+
+// just for convenience to pass data around
+// no id just yet
+struct FileObjRow {
+    file_path: PathBuf,
+    file_size: u64,
+    file_modification_time: u64,
+}
 
 fn has_ignore_dir(path: &PathBuf) -> bool {
     path.components().any(|component| {
@@ -43,20 +73,26 @@ fn hash_file(path: &PathBuf) -> io::Result<u64> {
     Ok(hasher.finish())
 }
 
-async fn save_file_hash_assoc(path: &PathBuf, pool: &Pool<sqlx::Sqlite>,existing_hash_id: u64)-> Result<(), Box<dyn std::error::Error>> {
+async fn save_file_hash_assoc(file_row: &FileObjRow, existing_hash_id: i64, pool: &Pool<sqlx::Sqlite>)-> Result<(), Box<dyn std::error::Error>> {
     assert!(existing_hash_id > 0);
     let (sql, values) = Query::insert()
     .into_table(FileObj::Table)
     .on_conflict( OnConflict::columns([FileObj::FilePath])
         .value(FileObj::HashId, existing_hash_id)
+        .value(FileObj::FileSize, file_row.file_size)
+        .value(FileObj::FileModificationTime, file_row.file_modification_time)
         .to_owned())
     .columns([
         FileObj::FilePath,
         FileObj::HashId,
+        FileObj::FileSize,
+        FileObj::FileModificationTime,
     ])
     .values_panic([
-        path.to_str().unwrap().into(),
+        file_row.file_path.to_str().unwrap().into(),
         existing_hash_id.into(),
+        file_row.file_size.into(),
+        file_row.file_modification_time.into(),
     ])
     .build_sqlx(SqliteQueryBuilder);
 
@@ -67,6 +103,33 @@ async fn save_file_hash_assoc(path: &PathBuf, pool: &Pool<sqlx::Sqlite>,existing
     Ok(())
 }
 
+fn get_file_obj_row(path: &PathBuf) -> FileObjRow {
+    let metadata = fs::metadata(&path).unwrap();
+    let filesize = metadata.len();
+    let file_modification_time = metadata.modified().unwrap().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+
+
+    FileObjRow {
+        file_path: path.clone(),
+        file_size: filesize,
+        file_modification_time: file_modification_time,
+    }
+}
+
+async fn file_exists(file_row: &FileObjRow, pool: &Pool<sqlx::Sqlite>) -> Result<bool, Box<dyn std::error::Error>> {
+    let (sql, values) = Query::select()
+    .columns([FileObj::Id])
+    .from(FileObj::Table)
+    .and_where(Expr::col(FileObj::FilePath).eq(file_row.file_path.to_str().unwrap()).
+    and(Expr::col(FileObj::FileSize).eq(file_row.file_size).
+    and(Expr::col(FileObj::FileModificationTime).eq(file_row.file_modification_time)))).build_sqlx(SqliteQueryBuilder);
+    eprintln!("sql: {}",sql);
+    eprintln!("values: {:?}",values);
+    let row = sqlx::query_with(&sql, values).fetch_optional(pool).await?;
+    eprintln!("row: {:?}",row.is_some());
+    Ok(row.is_some())
+}
+
 async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
     let metadata = fs::metadata(&path)?;
 
@@ -74,8 +137,18 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
 
     // skip files with size 0
     if filesize == 0 {
+        eprintln!("File size is 0, skipping");
         return Ok(());
     }
+
+    let file_obj_row = get_file_obj_row(path);
+    if file_exists(&file_obj_row, pool).await? {
+        eprintln!("File already exists in the database with the same size and modification time, skipping");
+        return Ok(());
+    }
+
+    //panic!("File does not exist in the database");
+
 
     let hash  = hash_file(&path)?;
     let hex_hash = format!("{:x}", hash);
@@ -92,15 +165,13 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
     .and_where(Expr::col(FileHash::FileSize).eq(filesize).and(Expr::col(FileHash::Hash).eq(hex_hash.clone()))).build_sqlx(SqliteQueryBuilder);
     let row2 = sqlx::query_with(&sql2, values2).fetch_optional(pool).await?;
     
-    //debug!("File already exists in the database: id = {id}\n");
-    if(row2.is_some()){
+    let existing_hash_id = if row2.is_some(){
         let row2 = row2.unwrap();
-        let id: i64 = row2.get(0);
-        debug!("File already exists in the database: id = {id}\n");
-        save_file_hash_assoc(path,pool,id as u64).await?;
-        return Ok(());
+        let existing_hash_id: i64 = row2.get(0);
+        debug!("File hash already exists in the database: id = {existing_hash_id}\n");
+        existing_hash_id
     }else{
-        debug!("File does not exist in the database");
+        debug!("File hash does not exist in the database");
         // Create
         let (sql, values) = Query::insert()
         .into_table(FileHash::Table)
@@ -116,28 +187,12 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
         .build_sqlx(SqliteQueryBuilder);
 
         let row =sqlx::query_with(&sql, values).execute(pool).await?;
-        let id: i64 = row.last_insert_rowid();
-        debug!("Insert into file: last_insert_id = {id}\n");
-    }
+        let existing_hash_id: i64 = row.last_insert_rowid();
+        debug!("Insert into file: last_insert_id = {existing_hash_id}\n");
+        existing_hash_id
+    };
+    save_file_hash_assoc(&file_obj_row,existing_hash_id,pool).await?;
     Ok(())
-}
-
-#[derive(Iden)]
-enum FileHash {
-    Table,
-    Id,
-    FileSize,
-    Hash,
-}
-
-
-#[derive(Iden)]
-enum FileObj {
-    #[iden = "file"]
-    Table,
-    Id,
-    FilePath,
-    HashId,
 }
 
 

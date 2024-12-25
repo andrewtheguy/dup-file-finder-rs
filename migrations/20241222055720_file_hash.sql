@@ -1,7 +1,7 @@
 -- Add migration script here
 create table file_hash (
     id integer primary key AUTOINCREMENT not null,
-    file_size int not null,
+    file_size 'UNSIGNED BIG INT' not null,
     hash TEXT not null
 );
 
