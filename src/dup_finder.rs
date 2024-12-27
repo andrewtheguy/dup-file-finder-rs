@@ -219,3 +219,24 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), 
     }
     Ok(())
 }
+
+pub async fn delete_not_found(pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+    let (sql, values) = Query::select()
+    .columns([FileObj::Id, FileObj::FilePath])
+    .from(FileObj::Table)
+    .build_sqlx(SqliteQueryBuilder);
+    let rows = sqlx::query_with(&sql, values).fetch_all(pool).await?;
+    for row in rows {
+        let id: i64 = row.get(0);
+        let file_path: String = row.get(1);
+        let path = Path::new(&file_path);
+        if !path.exists() {
+            let (sql, values) = Query::delete()
+            .from_table(FileObj::Table)
+            .and_where(Expr::col(FileObj::Id).eq(id)).build_sqlx(SqliteQueryBuilder);
+            let row = sqlx::query_with(&sql, values).execute(pool).await?;
+            eprintln!("Deleted not found file: {:?}", path);
+        }
+    }
+    Ok(())
+}
