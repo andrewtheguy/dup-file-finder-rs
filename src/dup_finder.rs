@@ -235,7 +235,7 @@ pub async fn delete_not_found(pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn s
             .from_table(FileObj::Table)
             .and_where(Expr::col(FileObj::Id).eq(id)).build_sqlx(SqliteQueryBuilder);
             let row = sqlx::query_with(&sql, values).execute(pool).await?;
-            eprintln!("Deleted not found file: {:?}", path);
+            eprintln!("Deleted not found entry from db: {:?}", path);
         }
     }
     Ok(())
