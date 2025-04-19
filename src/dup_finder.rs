@@ -1,5 +1,5 @@
 use walkdir::WalkDir;
-use core::panic;
+use csv::Writer;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use std::fs;
@@ -9,9 +9,9 @@ use twox_hash::XxHash3_64;
 use std::hash::Hasher;
 use sea_query::{ColumnDef, Expr, Func, Iden, OnConflict, Order, Query, SqliteQueryBuilder, Table};
 use sea_query_binder::SqlxBinder;
-use sqlx::{Pool, Row};
+use sqlx::{Column, Pool, Row, TypeInfo, Value, ValueRef};
 use log::{debug, info};
-
+use sqlx::sqlite::SqliteTypeInfo;
 
 #[derive(Iden)]
 enum FileHash {
@@ -127,6 +127,42 @@ async fn file_exists(file_row: &FileObjRow, pool: &Pool<sqlx::Sqlite>) -> Result
     let row = sqlx::query_with(&sql, values).fetch_optional(pool).await?;
     //eprintln!("row: {:?}",row.is_some());
     Ok(row.is_some())
+}
+
+pub async fn export_dups(pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+    let sql = r#"
+with dup as (select file.hash_id, count(id) as hash_count from file group by 1 having count(id) > 1) select file.*,file_hash.file_size,hash_count from file INNER join dup on file.hash_id = dup.hash_id inner join file_hash on file.hash_id=file_hash.id order by file_path asc
+"#;
+    let rows = sqlx::query(&sql).fetch_all(pool).await?;
+    if rows.is_empty() {
+        eprintln!("No rows returned from query.");
+        return Ok(());
+    }
+
+    // Dynamically extract column names from the first row
+    let column_names: Vec<&str> = rows[0].columns().iter().map(|col| col.name()).collect();
+
+    let file = File::create("output.csv")?;
+    let mut wtr = Writer::from_writer(file);
+
+    // Write dynamic headers
+    wtr.write_record(&column_names)?;
+    // Write row values
+    for row in &rows {
+        let mut record = Vec::new();
+        for col in &column_names {
+            // Convert each value to string, handling NULLs
+            let raw_value = row.try_get_raw(*col)?.to_owned();
+            let value: String = raw_value.try_decode_unchecked()?;
+            record.push(value);
+        }
+        wtr.write_record(record)?;
+    }
+
+    wtr.flush()?;
+    eprintln!("Data exported to output.csv with dynamic headers.");
+
+    Ok(())
 }
 
 async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {

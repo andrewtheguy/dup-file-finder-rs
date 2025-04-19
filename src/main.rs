@@ -2,7 +2,7 @@ use std::{env, path::PathBuf, process::exit};
 
 use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
-use hashfile::dup_finder::{delete_not_found, find_dups};
+use hashfile::dup_finder::{delete_not_found, export_dups, find_dups};
 use sqlx::SqlitePool;
 
 #[derive(Parser)]
@@ -31,7 +31,9 @@ enum Commands {
         path: String
     },
 
-    DeleteNotFound
+    DeleteNotFound,
+    
+    ExportDups
 
     // /// does testing things
     // Test {
@@ -74,6 +76,11 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
         }
         Commands::DeleteNotFound => {
             delete_not_found(&pool).await?;
+        }
+        Commands::ExportDups => {
+            // Implement the export duplicates functionality here
+            eprintln!("Exporting duplicates...");
+            export_dups(&pool).await?;
         }
     }
 
