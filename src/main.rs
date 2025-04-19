@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process::exit};
+use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 //use dotenvy::dotenv;
