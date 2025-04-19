@@ -152,8 +152,7 @@ with dup as (select file.hash_id, count(id) as hash_count from file group by 1 h
         let mut record = Vec::new();
         for col in &column_names {
             // Convert each value to string, handling NULLs
-            let raw_value = row.try_get_raw(*col)?.to_owned();
-            let value: String = raw_value.try_decode_unchecked()?;
+            let value: String = row.try_get_unchecked(*col)?;
             record.push(value);
         }
         wtr.write_record(record)?;
