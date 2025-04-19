@@ -11,6 +11,9 @@ use sea_query::{Expr, Iden, OnConflict, Query, SqliteQueryBuilder};
 use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
+use anyhow::{Result, Error};
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 #[derive(Iden)]
 enum FileHash {
@@ -71,7 +74,7 @@ fn hash_file(path: &PathBuf) -> io::Result<u64> {
     Ok(hasher.finish())
 }
 
-async fn save_file_hash_assoc(file_row: &FileObjRow, existing_hash_id: i64, pool: &Pool<sqlx::Sqlite>)-> Result<(), Box<dyn std::error::Error>> {
+async fn save_file_hash_assoc(file_row: &FileObjRow, existing_hash_id: i64, pool: &Pool<sqlx::Sqlite>)-> Result<()> {
     assert!(existing_hash_id > 0);
     let (sql, values) = Query::insert()
     .into_table(FileObj::Table)
@@ -114,7 +117,7 @@ fn get_file_obj_row(path: &PathBuf) -> FileObjRow {
     }
 }
 
-async fn file_exists(file_row: &FileObjRow, pool: &Pool<sqlx::Sqlite>) -> Result<bool, Box<dyn std::error::Error>> {
+async fn file_exists(file_row: &FileObjRow, pool: &Pool<sqlx::Sqlite>) -> Result<bool> {
     let (sql, values) = Query::select()
     .columns([FileObj::Id])
     .from(FileObj::Table)
@@ -163,7 +166,7 @@ with dup as (select file.hash_id, count(id) as hash_count from file group by 1 h
     Ok(())
 }
 
-async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
     let metadata = fs::metadata(&path)?;
 
     let filesize = metadata.len();
@@ -228,7 +231,13 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
     Ok(())
 }
 
-pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
+
+    let max_concurrent = 10;
+    let mut join_set = JoinSet::new();
+
+    // Used to signal cancellation
+    let (cancel_tx, mut cancel_rx) = watch::channel(false);
 
     // Create a WalkDir iterator
     for entry in WalkDir::new(path)
@@ -236,6 +245,11 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), 
         .into_iter()
         .filter_map(Result::ok) // Filter out errors
     {
+        // Stop loop if cancellation signal received
+        if *cancel_rx.borrow() {
+            break;
+        }
+
         let path = entry.path();
         let path_buf = &path.to_path_buf();
 
@@ -246,11 +260,45 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), 
 
         if path.is_file() {
             eprintln!("File: {:?}", path);
-            run(path_buf,&pool).await?;
+
+            // flush the join_set if it has reached the max_concurrent limit
+            if join_set.len() >= max_concurrent {
+                while let Some(result) = join_set.join_next().await{
+                    match result {
+                        Ok(_) => {
+                            // Task completed successfully
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {:?}", e);
+                            // Signal cancellation on failure
+                            let _ = cancel_tx.send(true);
+                        }
+                    }
+                }
+            }
+            let path_buf2 = path_buf.clone();
+            let pool2 = pool.clone();
+            join_set.spawn(async move {
+                run(&path_buf2,&pool2).await
+            });
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
         }
     }
+
+    while let Some(result) = join_set.join_next().await{
+        match result {
+            Ok(_) => {
+                // Task completed successfully
+            }
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
+                // Signal cancellation on failure
+                let _ = cancel_tx.send(true);
+            }
+        }
+    }
+
     Ok(())
 }
 
