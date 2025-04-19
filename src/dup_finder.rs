@@ -7,11 +7,10 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 use twox_hash::XxHash3_64;
 use std::hash::Hasher;
-use sea_query::{ColumnDef, Expr, Func, Iden, OnConflict, Order, Query, SqliteQueryBuilder, Table};
+use sea_query::{Expr, Iden, OnConflict, Query, SqliteQueryBuilder};
 use sea_query_binder::SqlxBinder;
-use sqlx::{Column, Pool, Row, TypeInfo, Value, ValueRef};
+use sqlx::{Column, Pool, Row};
 use log::{debug, info};
-use sqlx::sqlite::SqliteTypeInfo;
 
 #[derive(Iden)]
 enum FileHash {
@@ -97,7 +96,7 @@ async fn save_file_hash_assoc(file_row: &FileObjRow, existing_hash_id: i64, pool
 
     //panic!("sql: {}",sql);
 
-    let row = sqlx::query_with(&sql, values).execute(pool).await?;
+    sqlx::query_with(&sql, values).execute(pool).await?;
 
     Ok(())
 }
@@ -129,7 +128,7 @@ async fn file_exists(file_row: &FileObjRow, pool: &Pool<sqlx::Sqlite>) -> Result
     Ok(row.is_some())
 }
 
-pub async fn export_dups(pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn export_dups(pool: &Pool<sqlx::Sqlite>,result_output_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let sql = r#"
 with dup as (select file.hash_id, count(id) as hash_count from file group by 1 having count(id) > 1) select file.*,file_hash.file_size,hash_count from file INNER join dup on file.hash_id = dup.hash_id inner join file_hash on file.hash_id=file_hash.id order by file_path asc
 "#;
@@ -142,7 +141,7 @@ with dup as (select file.hash_id, count(id) as hash_count from file group by 1 h
     // Dynamically extract column names from the first row
     let column_names: Vec<&str> = rows[0].columns().iter().map(|col| col.name()).collect();
 
-    let file = File::create("output.csv")?;
+    let file = File::create(result_output_path)?;
     let mut wtr = Writer::from_writer(file);
 
     // Write dynamic headers
@@ -269,7 +268,7 @@ pub async fn delete_not_found(pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn s
             let (sql, values) = Query::delete()
             .from_table(FileObj::Table)
             .and_where(Expr::col(FileObj::Id).eq(id)).build_sqlx(SqliteQueryBuilder);
-            let row = sqlx::query_with(&sql, values).execute(pool).await?;
+            sqlx::query_with(&sql, values).execute(pool).await?;
             eprintln!("Deleted not found entry from db: {:?}", path);
         }
     }
