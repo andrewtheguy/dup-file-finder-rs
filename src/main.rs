@@ -80,6 +80,8 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
         }
         Commands::DeleteFilesNotFound => {
             delete_not_found(&pool).await?;
+            eprintln!("Exporting duplicates...");
+            export_dups(&pool,&config.result_output_path).await?;
         }
         Commands::ExportResult => {
             // Implement the export duplicates functionality here

@@ -1,0 +1,3 @@
+database_url = "sqlite://test.db?mode=rwc"
+search_path = "/search_path"
+result_output_path = "result.csv"
