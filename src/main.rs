@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use dup_file_finder::dup_finder::{delete_not_found, export_dups, find_dups};
 use sqlx::SqlitePool;
 use serde::Deserialize;
+use sqlx::sqlite::SqlitePoolOptions;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -66,8 +67,11 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
         &fs::read_to_string(cli.config)?
     )?;
 
-    let pool = SqlitePool::connect(config.database_url.as_str()).await?;
-
+    //let pool = SqlitePool::connect(config.database_url.as_str()).await?;
+    let pool: SqlitePool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(config.database_url.as_str())
+        .await?;
     sqlx::migrate!("./migrations")
     .run(&pool)
     .await?;

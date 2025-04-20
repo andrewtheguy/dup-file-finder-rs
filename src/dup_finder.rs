@@ -13,7 +13,7 @@ use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
 use anyhow::{Result, Error, bail};
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 
@@ -224,12 +224,15 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 }
 
 pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
+    //match pool size
+    let max_concurrent_tasks = 5;
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_tasks));
 
     let mut join_set = JoinSet::new();
 
     // Used to signal cancellation
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    //let mut rx2 = cancel_tx.subscribe();
+
     // Create a WalkDir iterator
     for entry in WalkDir::new(path)
         .follow_links(false) // Do not follow symbolic links
@@ -257,18 +260,21 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             let pool2 = pool.clone();
             let cancel_tx = cancel_tx.clone();
             let cancel_rx = cancel_rx.clone();
+            let permit = semaphore.clone().acquire_owned().await?;
             join_set.spawn(async move {
                 if *cancel_rx.borrow() {
-                    eprintln!("Cancellation signal received, skipping task.");
+                    debug!("Cancellation signal received, skipping task.");
                     return Ok(());
                 }
-                eprintln!("doing work for: {:?}", path_buf2);
+                debug!("doing work for: {:?}", path_buf2);
                 let result = run(&path_buf2,&pool2).await;
                 if result.is_err() {
                     eprintln!("Error processing file {:?}: {:?}",path_buf2, result);
                     // Signal cancellation on failure
                     let _ = cancel_tx.send(true);
                 }
+                // Release the permit
+                drop(permit);
                 result
             });
         } else if path.is_dir() {
