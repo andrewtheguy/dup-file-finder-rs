@@ -1,16 +1,20 @@
-use walkdir::WalkDir;
 use csv::Writer;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use twox_hash::XxHash3_64;
 use std::hash::Hasher;
+use std::sync::Arc;
 use sea_query::{Expr, Iden, OnConflict, Query, SqliteQueryBuilder};
 use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
+use anyhow::{Result, Error, bail};
+use jwalk::WalkDir;
+use tokio::sync::{watch, Semaphore};
+use tokio::task::JoinSet;
 
 #[derive(Iden)]
 enum FileHash {
@@ -71,7 +75,7 @@ fn hash_file(path: &PathBuf) -> io::Result<u64> {
     Ok(hasher.finish())
 }
 
-async fn save_file_hash_assoc(file_row: &FileObjRow, existing_hash_id: i64, pool: &Pool<sqlx::Sqlite>)-> Result<(), Box<dyn std::error::Error>> {
+async fn save_file_hash_assoc(file_row: &FileObjRow, existing_hash_id: i64, pool: &Pool<sqlx::Sqlite>)-> Result<()> {
     assert!(existing_hash_id > 0);
     let (sql, values) = Query::insert()
     .into_table(FileObj::Table)
@@ -114,7 +118,7 @@ fn get_file_obj_row(path: &PathBuf) -> FileObjRow {
     }
 }
 
-async fn file_exists(file_row: &FileObjRow, pool: &Pool<sqlx::Sqlite>) -> Result<bool, Box<dyn std::error::Error>> {
+async fn file_exists(file_row: &FileObjRow, pool: &Pool<sqlx::Sqlite>) -> Result<bool> {
     let (sql, values) = Query::select()
     .columns([FileObj::Id])
     .from(FileObj::Table)
@@ -158,13 +162,18 @@ with dup as (select file.hash_id, count(id) as hash_count from file group by 1 h
     }
 
     wtr.flush()?;
-    eprintln!("Data exported to output.csv with dynamic headers.");
+    eprintln!("Data exported to {} with dynamic headers.", result_output_path.as_path().display());
 
     Ok(())
 }
 
-async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
     let metadata = fs::metadata(&path)?;
+
+    // if path == Path::new("/Users/it3/Documents/before.png") {
+    //     bail!("test ewrror");
+    // }
+    //bail!("Not implemented");
 
     let filesize = metadata.len();
 
@@ -188,23 +197,6 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
 
 
 
-    // let mut id: i64 = row.last_insert_rowid();
-    // debug!("Insert into file hash: last_insert_id = {id}\n");
-    // if id == 0 {
-        //debug!("File already exists in the database");
-    let (sql2, values2) = Query::select()
-    .columns([FileHash::Id])
-    .from(FileHash::Table)
-    .and_where(Expr::col(FileHash::FileSize).eq(filesize).and(Expr::col(FileHash::Hash).eq(hex_hash.clone()))).build_sqlx(SqliteQueryBuilder);
-    let row2 = sqlx::query_with(&sql2, values2).fetch_optional(pool).await?;
-    
-    let existing_hash_id = if row2.is_some(){
-        let row2 = row2.unwrap();
-        let existing_hash_id: i64 = row2.get(0);
-        debug!("File hash already exists in the database: id = {existing_hash_id}\n");
-        existing_hash_id
-    }else{
-        debug!("File hash does not exist in the database");
         // Create
         let (sql, values) = Query::insert()
         .into_table(FileHash::Table)
@@ -217,18 +209,27 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn st
             hex_hash.clone().into(),
             
         ])
+            .on_conflict(OnConflict::columns([FileHash::FileSize,FileHash::Hash]).value(FileHash::FileSize,filesize).to_owned()).returning(crate::dup_finder::
+            Query::returning().columns([FileHash::Id]))
         .build_sqlx(SqliteQueryBuilder);
 
-        let row =sqlx::query_with(&sql, values).execute(pool).await?;
-        let existing_hash_id: i64 = row.last_insert_rowid();
+        let row =sqlx::query_with(&sql, values).fetch_one(pool).await?;
+        let existing_hash_id: i64 = row.try_get(0)?;
         debug!("Insert into file: last_insert_id = {existing_hash_id}\n");
-        existing_hash_id
-    };
+
+
     save_file_hash_assoc(&file_obj_row,existing_hash_id,pool).await?;
     Ok(())
 }
 
-pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
+
+    let cleanup_threshold = 100;
+
+    let mut join_set = JoinSet::new();
+
+    // Used to signal cancellation
+    let (cancel_tx, cancel_rx) = watch::channel(false);
 
     // Create a WalkDir iterator
     for entry in WalkDir::new(path)
@@ -236,6 +237,13 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), 
         .into_iter()
         .filter_map(Result::ok) // Filter out errors
     {
+        //eprintln!("cancel_rx: {:?}", cancel_rx.borrow());
+        // Stop loop if cancellation signal received
+        if *cancel_rx.borrow() {
+            panic!("Cancellation signal received because error occurred, stopping processing.");
+            break;
+        }
+        //sleep(Duration::from_secs(1)).await;
         let path = entry.path();
         let path_buf = &path.to_path_buf();
 
@@ -246,11 +254,58 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<(), 
 
         if path.is_file() {
             eprintln!("File: {:?}", path);
-            run(path_buf,&pool).await?;
+            let path_buf2 = path_buf.clone();
+            let pool2 = pool.clone();
+            let cancel_tx = cancel_tx.clone();
+            let cancel_rx = cancel_rx.clone();
+            //eprintln!("join set size: {}", join_set.len());
+            // if join_set.len() >= cleanup_threshold {
+            //     //clear up the join_set
+            //     while let Some(result) = join_set.join_next().await {
+            //         match result {
+            //             Ok(_) => {
+            //                 // Task completed successfully
+            //             }
+            //             Err(e) => {
+            //                 eprintln!("Error: {:?}", e);
+            //             }
+            //         }
+            //     }
+            // }
+            join_set.spawn(async move {
+                if *cancel_rx.borrow() {
+                    debug!("Cancellation signal received, skipping task.");
+                    return;
+                }
+                debug!("doing work for: {:?}", path_buf2);
+                let result = run(&path_buf2,&pool2).await;
+                if result.is_err() {
+                    eprintln!("Error processing file {:?}: {:?}",path_buf2, result);
+                    // Signal cancellation on failure
+                    let _ = cancel_tx.send(true);
+                }
+            });
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
         }
+        //sleep(Duration::from_secs(5)).await;
     }
+
+    while let Some(result) = join_set.join_next().await{
+        match result {
+            Ok(_) => {
+                // Task completed successfully
+            }
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
+            }
+        }
+    }
+
+    if *cancel_rx.borrow() {
+        panic!("Cancellation signal received because error occurred, quitting.");
+    }
+
     Ok(())
 }
 
