@@ -1,4 +1,3 @@
-use walkdir::WalkDir;
 use csv::Writer;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -13,6 +12,7 @@ use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
 use anyhow::{Result, Error, bail};
+use jwalk::WalkDir;
 use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 
@@ -223,7 +223,7 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 }
 
 pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
-    
+
     let cleanup_threshold = 100;
 
     let mut join_set = JoinSet::new();
@@ -259,23 +259,23 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             let cancel_tx = cancel_tx.clone();
             let cancel_rx = cancel_rx.clone();
             //eprintln!("join set size: {}", join_set.len());
-            if join_set.len() >= cleanup_threshold {
-                //clear up the join_set
-                while let Some(result) = join_set.join_next().await {
-                    match result {
-                        Ok(_) => {
-                            // Task completed successfully
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {:?}", e);
-                        }
-                    }
-                }
-            }
+            // if join_set.len() >= cleanup_threshold {
+            //     //clear up the join_set
+            //     while let Some(result) = join_set.join_next().await {
+            //         match result {
+            //             Ok(_) => {
+            //                 // Task completed successfully
+            //             }
+            //             Err(e) => {
+            //                 eprintln!("Error: {:?}", e);
+            //             }
+            //         }
+            //     }
+            // }
             join_set.spawn(async move {
                 if *cancel_rx.borrow() {
                     debug!("Cancellation signal received, skipping task.");
-                    return Ok(());
+                    return;
                 }
                 debug!("doing work for: {:?}", path_buf2);
                 let result = run(&path_buf2,&pool2).await;
@@ -284,7 +284,6 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
                     // Signal cancellation on failure
                     let _ = cancel_tx.send(true);
                 }
-                result
             });
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
