@@ -82,7 +82,7 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
     
     //let pool = SqlitePool::connect(config.database_url.as_str()).await?;
     let pool: SqlitePool = SqlitePoolOptions::new()
-        .max_connections(metrics.num_workers() as u32 + 5)
+        .max_connections(metrics.num_workers() as u32 + 10)
         .connect(config.database_url.as_str())
         .await?;
     sqlx::migrate!("./migrations")
