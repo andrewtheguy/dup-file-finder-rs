@@ -56,7 +56,7 @@ struct Config {
 }
 
 
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main(flavor = "multi_thread",worker_threads = 5)]
 async fn main() -> Result<(),Box<dyn std::error::Error>> {
     // load environment variables from .env file
     //dotenv().expect(".env file not found");
