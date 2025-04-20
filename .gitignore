@@ -5,3 +5,4 @@
 *.db-journal
 *.csv
 .idea/
+tmp/

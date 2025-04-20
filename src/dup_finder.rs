@@ -264,6 +264,8 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             join_set.spawn(async move {
                 if *cancel_rx.borrow() {
                     debug!("Cancellation signal received, skipping task.");
+                    // Release the permit
+                    drop(permit);
                     return Ok(());
                 }
                 debug!("doing work for: {:?}", path_buf2);
