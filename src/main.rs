@@ -1,11 +1,13 @@
 use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand};
+use log::debug;
 //use dotenvy::dotenv;
-use dup_file_finder::dup_finder::{delete_not_found, export_dups, find_dups,MAX_CONCURRENT_TASKS};
+use dup_file_finder::dup_finder::{delete_not_found, export_dups, find_dups};
 use sqlx::SqlitePool;
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
+use tokio::runtime::Handle;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -54,7 +56,7 @@ struct Config {
 }
 
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(),Box<dyn std::error::Error>> {
     // load environment variables from .env file
     //dotenv().expect(".env file not found");
@@ -67,9 +69,20 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
         &fs::read_to_string(cli.config)?
     )?;
 
+    // Get the current runtime handle
+    let handle = tokio::runtime::Handle::current();
+
+    // Get metrics about the runtime
+    let metrics = handle.metrics();
+
+    // Print the number of worker threads
+    debug!("Number of worker threads: {}", metrics.num_workers());
+    
+    //panic!("test panic");
+    
     //let pool = SqlitePool::connect(config.database_url.as_str()).await?;
     let pool: SqlitePool = SqlitePoolOptions::new()
-        .max_connections(MAX_CONCURRENT_TASKS as u32)
+        .max_connections(metrics.num_workers() as u32 + 5)
         .connect(config.database_url.as_str())
         .await?;
     sqlx::migrate!("./migrations")

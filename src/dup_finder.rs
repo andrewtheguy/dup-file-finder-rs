@@ -16,8 +16,6 @@ use anyhow::{Result, Error, bail};
 use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 
-pub const MAX_CONCURRENT_TASKS: usize = 50;
-
 #[derive(Iden)]
 enum FileHash {
     Table,
@@ -225,9 +223,8 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 }
 
 pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
-    //match pool size
-    let max_concurrent_tasks = MAX_CONCURRENT_TASKS;
-    let semaphore = Arc::new(Semaphore::new(max_concurrent_tasks));
+    
+    let cleanup_threshold = 100;
 
     let mut join_set = JoinSet::new();
 
@@ -261,9 +258,8 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             let pool2 = pool.clone();
             let cancel_tx = cancel_tx.clone();
             let cancel_rx = cancel_rx.clone();
-            let permit = semaphore.clone().acquire_owned().await?;
             //eprintln!("join set size: {}", join_set.len());
-            if join_set.len() >= max_concurrent_tasks * 2 {
+            if join_set.len() >= cleanup_threshold {
                 //clear up the join_set
                 while let Some(result) = join_set.join_next().await {
                     match result {
@@ -279,8 +275,6 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             join_set.spawn(async move {
                 if *cancel_rx.borrow() {
                     debug!("Cancellation signal received, skipping task.");
-                    // Release the permit
-                    drop(permit);
                     return Ok(());
                 }
                 debug!("doing work for: {:?}", path_buf2);
@@ -290,8 +284,6 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
                     // Signal cancellation on failure
                     let _ = cancel_tx.send(true);
                 }
-                // Release the permit
-                drop(permit);
                 result
             });
         } else if path.is_dir() {
