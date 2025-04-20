@@ -243,7 +243,7 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
         //eprintln!("cancel_rx: {:?}", cancel_rx.borrow());
         // Stop loop if cancellation signal received
         if *cancel_rx.borrow() {
-            panic!("Cancellation signal received, stopping processing.");
+            panic!("Cancellation signal received because error occurred, stopping processing.");
             break;
         }
         //sleep(Duration::from_secs(1)).await;
@@ -309,6 +309,10 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
                 eprintln!("Error: {:?}", e);
             }
         }
+    }
+
+    if *cancel_rx.borrow() {
+        panic!("Cancellation signal received because error occurred, quitting.");
     }
 
     Ok(())
