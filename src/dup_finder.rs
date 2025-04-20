@@ -15,7 +15,8 @@ use log::{debug, info};
 use anyhow::{Result, Error, bail};
 use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
-use tokio::time::sleep;
+
+pub const MAX_CONCURRENT_TASKS: usize = 50;
 
 #[derive(Iden)]
 enum FileHash {
@@ -225,7 +226,7 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 
 pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
     //match pool size
-    let max_concurrent_tasks = 5;
+    let max_concurrent_tasks = MAX_CONCURRENT_TASKS;
     let semaphore = Arc::new(Semaphore::new(max_concurrent_tasks));
 
     let mut join_set = JoinSet::new();

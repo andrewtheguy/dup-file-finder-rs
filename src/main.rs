@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 //use dotenvy::dotenv;
-use dup_file_finder::dup_finder::{delete_not_found, export_dups, find_dups};
+use dup_file_finder::dup_finder::{delete_not_found, export_dups, find_dups,MAX_CONCURRENT_TASKS};
 use sqlx::SqlitePool;
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -69,7 +69,7 @@ async fn main() -> Result<(),Box<dyn std::error::Error>> {
 
     //let pool = SqlitePool::connect(config.database_url.as_str()).await?;
     let pool: SqlitePool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(MAX_CONCURRENT_TASKS as u32)
         .connect(config.database_url.as_str())
         .await?;
     sqlx::migrate!("./migrations")
