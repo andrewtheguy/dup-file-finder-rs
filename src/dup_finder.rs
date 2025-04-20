@@ -164,7 +164,7 @@ with dup as (select file.hash_id, count(id) as hash_count from file group by 1 h
     }
 
     wtr.flush()?;
-    eprintln!("Data exported to output.csv with dynamic headers.");
+    eprintln!("Data exported to {} with dynamic headers.", result_output_path.as_path().display());
 
     Ok(())
 }
