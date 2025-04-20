@@ -57,7 +57,8 @@ struct Config {
 async fn main() -> Result<(),Box<dyn std::error::Error>> {
     // load environment variables from .env file
     //dotenv().expect(".env file not found");
-
+    env_logger::init();
+    
     let cli = Cli::parse();
     let command = cli.command;
 

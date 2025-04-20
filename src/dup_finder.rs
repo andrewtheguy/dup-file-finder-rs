@@ -1,19 +1,21 @@
 use walkdir::WalkDir;
 use csv::Writer;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use twox_hash::XxHash3_64;
 use std::hash::Hasher;
+use std::sync::Arc;
 use sea_query::{Expr, Iden, OnConflict, Query, SqliteQueryBuilder};
 use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
-use anyhow::{Result, Error};
+use anyhow::{Result, Error, bail};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tokio::time::sleep;
 
 #[derive(Iden)]
 enum FileHash {
@@ -169,6 +171,11 @@ with dup as (select file.hash_id, count(id) as hash_count from file group by 1 h
 async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
     let metadata = fs::metadata(&path)?;
 
+    // if path == Path::new("/Users/it3/Documents/before.png") {
+    //     bail!("test ewrror");
+    // }
+    //bail!("Not implemented");
+
     let filesize = metadata.len();
 
     // skip files with size 0
@@ -191,23 +198,6 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 
 
 
-    // let mut id: i64 = row.last_insert_rowid();
-    // debug!("Insert into file hash: last_insert_id = {id}\n");
-    // if id == 0 {
-        //debug!("File already exists in the database");
-    let (sql2, values2) = Query::select()
-    .columns([FileHash::Id])
-    .from(FileHash::Table)
-    .and_where(Expr::col(FileHash::FileSize).eq(filesize).and(Expr::col(FileHash::Hash).eq(hex_hash.clone()))).build_sqlx(SqliteQueryBuilder);
-    let row2 = sqlx::query_with(&sql2, values2).fetch_optional(pool).await?;
-    
-    let existing_hash_id = if row2.is_some(){
-        let row2 = row2.unwrap();
-        let existing_hash_id: i64 = row2.get(0);
-        debug!("File hash already exists in the database: id = {existing_hash_id}\n");
-        existing_hash_id
-    }else{
-        debug!("File hash does not exist in the database");
         // Create
         let (sql, values) = Query::insert()
         .into_table(FileHash::Table)
@@ -220,36 +210,39 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
             hex_hash.clone().into(),
             
         ])
+            .on_conflict(OnConflict::columns([FileHash::FileSize,FileHash::Hash]).value(FileHash::FileSize,filesize).to_owned()).returning(crate::dup_finder::
+            Query::returning().columns([FileHash::Id]))
         .build_sqlx(SqliteQueryBuilder);
 
-        let row =sqlx::query_with(&sql, values).execute(pool).await?;
-        let existing_hash_id: i64 = row.last_insert_rowid();
+        let row =sqlx::query_with(&sql, values).fetch_one(pool).await?;
+        let existing_hash_id: i64 = row.try_get(0)?;
         debug!("Insert into file: last_insert_id = {existing_hash_id}\n");
-        existing_hash_id
-    };
+
+
     save_file_hash_assoc(&file_obj_row,existing_hash_id,pool).await?;
     Ok(())
 }
 
 pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 
-    let max_concurrent = 10;
     let mut join_set = JoinSet::new();
 
     // Used to signal cancellation
-    let (cancel_tx, mut cancel_rx) = watch::channel(false);
-
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    //let mut rx2 = cancel_tx.subscribe();
     // Create a WalkDir iterator
     for entry in WalkDir::new(path)
         .follow_links(false) // Do not follow symbolic links
         .into_iter()
         .filter_map(Result::ok) // Filter out errors
     {
+        //eprintln!("cancel_rx: {:?}", cancel_rx.borrow());
         // Stop loop if cancellation signal received
         if *cancel_rx.borrow() {
+            panic!("Cancellation signal received, stopping processing.");
             break;
         }
-
+        //sleep(Duration::from_secs(1)).await;
         let path = entry.path();
         let path_buf = &path.to_path_buf();
 
@@ -260,30 +253,28 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
 
         if path.is_file() {
             eprintln!("File: {:?}", path);
-
-            // flush the join_set if it has reached the max_concurrent limit
-            if join_set.len() >= max_concurrent {
-                while let Some(result) = join_set.join_next().await{
-                    match result {
-                        Ok(_) => {
-                            // Task completed successfully
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {:?}", e);
-                            // Signal cancellation on failure
-                            let _ = cancel_tx.send(true);
-                        }
-                    }
-                }
-            }
             let path_buf2 = path_buf.clone();
             let pool2 = pool.clone();
+            let cancel_tx = cancel_tx.clone();
+            let cancel_rx = cancel_rx.clone();
             join_set.spawn(async move {
-                run(&path_buf2,&pool2).await
+                if *cancel_rx.borrow() {
+                    eprintln!("Cancellation signal received, skipping task.");
+                    return Ok(());
+                }
+                eprintln!("doing work for: {:?}", path_buf2);
+                let result = run(&path_buf2,&pool2).await;
+                if result.is_err() {
+                    eprintln!("Error processing file {:?}: {:?}",path_buf2, result);
+                    // Signal cancellation on failure
+                    let _ = cancel_tx.send(true);
+                }
+                result
             });
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
         }
+        //sleep(Duration::from_secs(5)).await;
     }
 
     while let Some(result) = join_set.join_next().await{
@@ -293,8 +284,6 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             }
             Err(e) => {
                 eprintln!("Error: {:?}", e);
-                // Signal cancellation on failure
-                let _ = cancel_tx.send(true);
             }
         }
     }
