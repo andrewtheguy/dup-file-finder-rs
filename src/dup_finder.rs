@@ -262,6 +262,20 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             let cancel_tx = cancel_tx.clone();
             let cancel_rx = cancel_rx.clone();
             let permit = semaphore.clone().acquire_owned().await?;
+            //eprintln!("join set size: {}", join_set.len());
+            if join_set.len() >= max_concurrent_tasks * 2 {
+                //clear up the join_set
+                while let Some(result) = join_set.join_next().await {
+                    match result {
+                        Ok(_) => {
+                            // Task completed successfully
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {:?}", e);
+                        }
+                    }
+                }
+            }
             join_set.spawn(async move {
                 if *cancel_rx.borrow() {
                     debug!("Cancellation signal received, skipping task.");
