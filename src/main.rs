@@ -1,5 +1,5 @@
 use std::{fs, path::PathBuf};
-
+use std::cmp::{max, min};
 use clap::{Parser, Subcommand};
 use log::debug;
 //use dotenvy::dotenv;
@@ -58,12 +58,21 @@ struct Config {
 
 
 fn main() -> Result<(),Box<dyn std::error::Error>> {
+
+    use std::thread::available_parallelism;
+    let default_parallelism_approx = available_parallelism().unwrap().get();
+    //eprintln!("Available parallelism: {:?}", &default_parallelism_approx);
+    //panic!("test panic");
+    
     // load environment variables from .env file
     //dotenv().expect(".env file not found");
     env_logger::init();
+    
+    // limit the number of threads to a maximum of core count
+    let max_threads = min(default_parallelism_approx, CONCURRENCY_LIMIT);
 
     let runtime = runtime::Builder::new_multi_thread()
-        .worker_threads(CONCURRENCY_LIMIT)
+        .worker_threads(max_threads)
         .enable_all()
         .build()?;
     
