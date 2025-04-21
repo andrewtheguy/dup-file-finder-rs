@@ -224,7 +224,7 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 
 pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 
-    let cleanup_threshold = 100;
+    //let cleanup_threshold = 100;
 
     let mut join_set = JoinSet::new();
 
@@ -284,6 +284,7 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
                     // Signal cancellation on failure
                     let _ = cancel_tx.send(true);
                 }
+                drop(pool2);
             });
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
