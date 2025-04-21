@@ -9,7 +9,7 @@ log = "0.4.22"
 sea-query = "0.32.1"
 sea-query-binder = { version = "0.7.0", features = ["sqlx-sqlite"] }
 sqlx = { version = "0.8.5", features = ["sqlite","runtime-tokio"] }
-tokio = { version = "1.42.0", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
 twox-hash = "2.1.0"
 #walkdir = "2.5.0"
 csv = "1.3.1"
