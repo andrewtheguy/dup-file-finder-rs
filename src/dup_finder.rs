@@ -6,15 +6,18 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 use twox_hash::XxHash3_64;
 use std::hash::Hasher;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::thread::sleep;
 use sea_query::{Expr, Iden, OnConflict, Query, SqliteQueryBuilder};
 use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
 use anyhow::{Result, Error, bail};
-use walkdir::WalkDir;
+use jwalk::WalkDir;
 use tokio::sync::{watch, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
+
+pub const CONCURRENCY_LIMIT: usize = 10;
 
 #[derive(Iden)]
 enum FileHash {
@@ -224,9 +227,12 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 
 pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 
-    //let cleanup_threshold = 100;
+    let max_concurrent_tasks = CONCURRENCY_LIMIT;
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_tasks));
 
-    let mut join_set = JoinSet::new();
+    // Use this to track how many tasks we've submitted
+    let task_count = Arc::new(Mutex::new(0));
+    let completed_task_count = Arc::new(Mutex::new(0));
 
     // Used to signal cancellation
     let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -259,7 +265,7 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             let cancel_tx = cancel_tx.clone();
             let cancel_rx = cancel_rx.clone();
             //eprintln!("join set size: {}", join_set.len());
-            // if join_set.len() >= cleanup_threshold {
+            // if join_set.len() >= CONCURRENCY_LIMIT {
             //     //clear up the join_set
             //     while let Some(result) = join_set.join_next().await {
             //         match result {
@@ -272,40 +278,52 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             //         }
             //     }
             // }
-            join_set.spawn(async move {
+            // Increment task count
+            *task_count.lock().unwrap() += 1;
+            let semaphore = semaphore.clone();
+            let completed_task_count = completed_task_count.clone();
+            tokio::spawn(async move {
+                let permit = semaphore.acquire().await.unwrap();
                 if *cancel_rx.borrow() {
                     debug!("Cancellation signal received, skipping task.");
                     drop(pool);
                     return;
                 }
                 debug!("doing work for: {:?}", path_buf);
+
                 let result = run(&path_buf,&pool).await;
+
                 if result.is_err() {
                     eprintln!("Error processing file {:?}: {:?}",path_buf, result);
                     // Signal cancellation on failure
                     let _ = cancel_tx.send(true);
                 }
+
+                let mut data = completed_task_count.lock().unwrap();
+                
+                *data += 1;
+                let task_number = *data;
+                drop(data);
+                
+                debug!("task number {} for {:?} completed",task_number,path_buf);
+
+                //eprintln!("current number of connections: {}", pool.size());
                 drop(pool);
+                drop(permit);
             });
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
         }
         //sleep(Duration::from_secs(5)).await;
     }
-    
-    while let Some(result) = join_set.join_next().await{
-        match result {
-            Ok(_) => {
-                // Task completed successfully
-            }
-            Err(e) => {
-                eprintln!("Error: {:?}", e);
-            }
-        }
-    }
 
     if *cancel_rx.borrow() {
         panic!("Cancellation signal received because error occurred, quitting.");
+    }else{
+        // Wait for all tasks to complete if no cancellation signal
+        while *completed_task_count.lock().unwrap() < *task_count.lock().unwrap() {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
     }
 
     Ok(())
