@@ -12,9 +12,9 @@ use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
 use anyhow::{Result, Error, bail};
-use jwalk::WalkDir;
+use walkdir::WalkDir;
 use tokio::sync::{watch, Semaphore};
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 
 #[derive(Iden)]
 enum FileHash {
@@ -254,8 +254,8 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
 
         if path.is_file() {
             eprintln!("File: {:?}", path);
-            let path_buf2 = path_buf.clone();
-            let pool2 = pool.clone();
+            let path_buf = path_buf.clone();
+            let pool = pool.clone();
             let cancel_tx = cancel_tx.clone();
             let cancel_rx = cancel_rx.clone();
             //eprintln!("join set size: {}", join_set.len());
@@ -275,23 +275,24 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             join_set.spawn(async move {
                 if *cancel_rx.borrow() {
                     debug!("Cancellation signal received, skipping task.");
+                    drop(pool);
                     return;
                 }
-                debug!("doing work for: {:?}", path_buf2);
-                let result = run(&path_buf2,&pool2).await;
+                debug!("doing work for: {:?}", path_buf);
+                let result = run(&path_buf,&pool).await;
                 if result.is_err() {
-                    eprintln!("Error processing file {:?}: {:?}",path_buf2, result);
+                    eprintln!("Error processing file {:?}: {:?}",path_buf, result);
                     // Signal cancellation on failure
                     let _ = cancel_tx.send(true);
                 }
-                drop(pool2);
+                drop(pool);
             });
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
         }
         //sleep(Duration::from_secs(5)).await;
     }
-
+    
     while let Some(result) = join_set.join_next().await{
         match result {
             Ok(_) => {
