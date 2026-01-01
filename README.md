@@ -6,7 +6,7 @@ Finds duplicate files by hashing contents with XxHash3_64 and stores results in 
 - Fast content hashing with XxHash3_64
 - SQLite storage with migrations in `migrations/`
 - Skips zero-byte files
-- Skips `.git` and `node_modules` directories
+- Configurable ignore list (defaults to `.git` and `node_modules`)
 - Export duplicates to CSV with dynamic headers
 - Configurable via TOML
 
@@ -25,6 +25,7 @@ Create a TOML config (see `config.toml.example`):
 database_url = "sqlite://./dup_files.db"
 search_path = "/path/to/scan"
 result_output_path = "./result.csv"
+ignore_list = [".git", "node_modules", "target"]
 ```
 
 ### `config.toml.example` fields
@@ -36,6 +37,8 @@ result_output_path = "./result.csv"
   Root directory to scan for files. This can be absolute (recommended) or relative to where you run the command.
 - `result_output_path`  
   Path to write the CSV export (duplicates report). Can be relative or absolute.
+- `ignore_list`
+  Optional list of directory names to ignore during scan. Defaults to `[".git", "node_modules"]` if not specified.
 
 ## Usage
 ```bash
@@ -62,7 +65,7 @@ The CSV includes all columns from the `file` table plus `file_hash.file_size` an
 ## How de-duplication works
 The tool identifies duplicates by hashing file contents and grouping by `(file_size, hash)`:
 
-1) Walks the directory tree rooted at `search_path` (skipping `.git` and `node_modules`).
+1) Walks the directory tree rooted at `search_path` (skipping directories in `ignore_list`).
 2) For each file, reads metadata and content:
    - `file_size` and `file_modification_time` from filesystem metadata.
    - `hash` is the XxHash3_64 of the file contents.
@@ -82,6 +85,6 @@ The tool identifies duplicates by hashing file contents and grouping by `(file_s
 - A file is skipped if it already exists in the DB **with the same size and modification time**.
 - Changing a file’s contents or mtime causes it to be re-hashed and updated.
 
-## Notes
+## Performance & Logging
 - Concurrency is capped by `CONCURRENCY_LIMIT` in `src/dup_finder.rs`.
 - Logs are emitted via `env_logger`. Set `RUST_LOG=debug` for more detail.
