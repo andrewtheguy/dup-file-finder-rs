@@ -1,6 +1,6 @@
 use csv::Writer;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
@@ -10,7 +10,7 @@ use sea_query::{Expr, Iden, OnConflict, Query, SqliteQueryBuilder};
 use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
-use anyhow::{Result, Error, bail};
+use anyhow::{Result, Error};
 use jwalk::WalkDir;
 use tokio::sync::watch;
 use tokio::task::{JoinSet};
@@ -172,7 +172,8 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
     // Gather metadata without blocking the async runtime.
     let path_for_metadata = path.clone();
     let file_obj_row = tokio::task::spawn_blocking(move || get_file_obj_row(&path_for_metadata))
-        .await??;
+        .await
+        .map_err(Error::new)?;
 
     // skip files with size 0
     if file_obj_row.file_size == 0 {
@@ -202,11 +203,11 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
             FileHash::Hash,
         ])
         .values_panic([
-            filesize.into(),
+            file_obj_row.file_size.into(),
             hex_hash.clone().into(),
             
         ])
-            .on_conflict(OnConflict::columns([FileHash::FileSize,FileHash::Hash]).value(FileHash::FileSize,filesize).to_owned()).returning(crate::dup_finder::
+            .on_conflict(OnConflict::columns([FileHash::FileSize,FileHash::Hash]).value(FileHash::FileSize,file_obj_row.file_size).to_owned()).returning(crate::dup_finder::
             Query::returning().columns([FileHash::Id]))
         .build_sqlx(SqliteQueryBuilder);
 
@@ -252,7 +253,7 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
             debug!("File: {:?}", path);
             let path_buf = path_buf.clone();
             let pool = pool.clone();
-            let cancel_tx = cancel_tx.clone();
+            let cancel_tx_task = cancel_tx.clone();
             let cancel_rx = cancel_rx.clone();
             join_set.spawn(async move {
                 if *cancel_rx.borrow() {
@@ -267,7 +268,7 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
                 if result.is_err() {
                     eprintln!("Error processing file {:?}: {:?}",path_buf, result);
                     // Signal cancellation on failure
-                    let _ = cancel_tx.send(true);
+                    let _ = cancel_tx_task.send(true);
                 }
                 drop(pool);
                 result.map(|_| ())
