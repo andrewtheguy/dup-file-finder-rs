@@ -6,16 +6,14 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 use twox_hash::XxHash3_64;
 use std::hash::Hasher;
-use std::sync::{Arc, Mutex};
-use std::thread::sleep;
 use sea_query::{Expr, Iden, OnConflict, Query, SqliteQueryBuilder};
 use sea_query_binder::SqlxBinder;
 use sqlx::{Column, Pool, Row};
 use log::{debug, info};
 use anyhow::{Result, Error, bail};
 use jwalk::WalkDir;
-use tokio::sync::{watch, Semaphore};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::sync::watch;
+use tokio::task::{JoinSet};
 
 pub const CONCURRENCY_LIMIT: usize = 10;
 
@@ -171,22 +169,16 @@ with dup as (select file.hash_id, count(id) as hash_count from file group by 1 h
 }
 
 async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
-    let metadata = fs::metadata(&path)?;
-
-    // if path == Path::new("/Users/it3/Documents/before.png") {
-    //     bail!("test ewrror");
-    // }
-    //bail!("Not implemented");
-
-    let filesize = metadata.len();
+    // Gather metadata without blocking the async runtime.
+    let path_for_metadata = path.clone();
+    let file_obj_row = tokio::task::spawn_blocking(move || get_file_obj_row(&path_for_metadata))
+        .await??;
 
     // skip files with size 0
-    if filesize == 0 {
+    if file_obj_row.file_size == 0 {
         eprintln!("File size is 0, skipping");
         return Ok(());
     }
-
-    let file_obj_row = get_file_obj_row(path);
     if file_exists(&file_obj_row, pool).await? {
         eprintln!("File already exists in the database with the same size and modification time, skipping");
         return Ok(());
@@ -195,7 +187,9 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
     //panic!("File does not exist in the database");
 
 
-    let hash  = hash_file(&path)?;
+    let path_for_hash = file_obj_row.file_path.clone();
+    let hash  = tokio::task::spawn_blocking(move || hash_file(&path_for_hash))
+        .await??;
     let hex_hash = format!("{:x}", hash);
 
 
@@ -228,14 +222,11 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
 
     let max_concurrent_tasks = CONCURRENCY_LIMIT;
-    let semaphore = Arc::new(Semaphore::new(max_concurrent_tasks));
-
-    // Use this to track how many tasks we've submitted
-    let task_count = Arc::new(Mutex::new(0));
-    let completed_task_count = Arc::new(Mutex::new(0));
 
     // Used to signal cancellation
     let (cancel_tx, cancel_rx) = watch::channel(false);
+    let mut join_set = JoinSet::new();
+    let mut in_flight = 0usize;
 
     // Create a WalkDir iterator
     for entry in WalkDir::new(path)
@@ -246,7 +237,6 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
         //eprintln!("cancel_rx: {:?}", cancel_rx.borrow());
         // Stop loop if cancellation signal received
         if *cancel_rx.borrow() {
-            panic!("Cancellation signal received because error occurred, stopping processing.");
             break;
         }
         //sleep(Duration::from_secs(1)).await;
@@ -259,35 +249,16 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
         }
 
         if path.is_file() {
-            eprintln!("File: {:?}", path);
+            debug!("File: {:?}", path);
             let path_buf = path_buf.clone();
             let pool = pool.clone();
             let cancel_tx = cancel_tx.clone();
             let cancel_rx = cancel_rx.clone();
-            //eprintln!("join set size: {}", join_set.len());
-            // if join_set.len() >= CONCURRENCY_LIMIT {
-            //     //clear up the join_set
-            //     while let Some(result) = join_set.join_next().await {
-            //         match result {
-            //             Ok(_) => {
-            //                 // Task completed successfully
-            //             }
-            //             Err(e) => {
-            //                 eprintln!("Error: {:?}", e);
-            //             }
-            //         }
-            //     }
-            // }
-            // Increment task count
-            *task_count.lock().unwrap() += 1;
-            let semaphore = semaphore.clone();
-            let completed_task_count = completed_task_count.clone();
-            tokio::spawn(async move {
-                let permit = semaphore.acquire().await.unwrap();
+            join_set.spawn(async move {
                 if *cancel_rx.borrow() {
                     debug!("Cancellation signal received, skipping task.");
                     drop(pool);
-                    return;
+                    return Ok(());
                 }
                 debug!("doing work for: {:?}", path_buf);
 
@@ -298,19 +269,19 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
                     // Signal cancellation on failure
                     let _ = cancel_tx.send(true);
                 }
-
-                let mut data = completed_task_count.lock().unwrap();
-                
-                *data += 1;
-                let task_number = *data;
-                drop(data);
-                
-                debug!("task number {} for {:?} completed",task_number,path_buf);
-
-                //eprintln!("current number of connections: {}", pool.size());
                 drop(pool);
-                drop(permit);
+                result.map(|_| ())
             });
+            in_flight += 1;
+            if in_flight >= max_concurrent_tasks {
+                if let Some(result) = join_set.join_next().await {
+                    in_flight -= 1;
+                    if let Err(join_err) = result {
+                        let _ = cancel_tx.send(true);
+                        return Err(Error::new(join_err));
+                    }
+                }
+            }
         } else if path.is_dir() {
             info!("Directory: {:?}", path);
         }
@@ -318,11 +289,15 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
     }
 
     if *cancel_rx.borrow() {
-        panic!("Cancellation signal received because error occurred, quitting.");
-    }else{
-        // Wait for all tasks to complete if no cancellation signal
-        while *completed_task_count.lock().unwrap() < *task_count.lock().unwrap() {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        return Err(Error::msg("Cancellation signal received because error occurred, quitting."));
+    }
+
+    while in_flight > 0 {
+        if let Some(result) = join_set.join_next().await {
+            in_flight -= 1;
+            if let Err(join_err) = result {
+                return Err(Error::new(join_err));
+            }
         }
     }
 
