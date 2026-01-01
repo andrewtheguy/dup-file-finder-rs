@@ -66,12 +66,13 @@ The CSV includes all columns from the `file` table plus `file_hash.file_size` an
 The tool identifies duplicates by hashing file contents and grouping by `(file_size, hash)`:
 
 1) Walks the directory tree rooted at `search_path` (skipping directories in `ignore_list`).
-2) For each file, reads metadata and content:
+2) Skips any file with a size of 0 bytes.
+3) For each remaining file, reads metadata and content:
    - `file_size` and `file_modification_time` from filesystem metadata.
    - `hash` is the XxHash3_64 of the file contents.
-3) Inserts or reuses a row in `file_hash` keyed by `(file_size, hash)`.
-4) Inserts or updates a row in `file` keyed by `file_path` with the `hash_id`, `file_size`, and `file_modification_time`.
-5) Duplicates are any `hash_id` that appears more than once in `file` (same content + size).
+4) Inserts or reuses a row in `file_hash` keyed by `(file_size, hash)`.
+5) Inserts or updates a row in `file` keyed by `file_path` with the `hash_id`, `file_size`, and `file_modification_time`.
+6) Duplicates are any `hash_id` that appears more than once in `file` (same content + size).
 
 ### Database schema (summary)
 - `file_hash`  
