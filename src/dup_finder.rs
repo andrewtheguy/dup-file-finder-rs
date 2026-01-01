@@ -45,10 +45,10 @@ struct FileObjRow {
     file_modification_time: u64,
 }
 
-fn has_ignore_dir(path: &PathBuf) -> bool {
+fn has_ignore_dir(path: &PathBuf, ignore_list: &[String]) -> bool {
     path.components().any(|component| {
-        let dir = component.as_os_str();
-         dir == ".git" || dir == "node_modules"
+        let dir = component.as_os_str().to_string_lossy();
+        ignore_list.iter().any(|ignore| ignore == &dir)
     })
 }
 
@@ -220,7 +220,7 @@ async fn run(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
     Ok(())
 }
 
-pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> {
+pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>, ignore_list: &[String]) -> Result<()> {
 
     let max_concurrent_tasks = CONCURRENCY_LIMIT;
 
@@ -244,8 +244,8 @@ pub async fn find_dups(path: &PathBuf, pool: &Pool<sqlx::Sqlite>) -> Result<()> 
         let path = entry.path();
         let path_buf = &path.to_path_buf();
 
-        // Skip the .git directory
-        if has_ignore_dir(path_buf) {
+        // Skip the ignored directories
+        if has_ignore_dir(path_buf, ignore_list) {
             continue;
         }
 

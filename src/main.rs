@@ -47,13 +47,20 @@ enum Commands {
     // },
 }
 
+
+
 #[derive(Deserialize)]
 struct Config {
     database_url: String,
     search_path: PathBuf,
     result_output_path: PathBuf,
+    #[serde(default = "default_ignore_list")]
+    ignore_list: Vec<String>,
 }
 
+fn default_ignore_list() -> Vec<String> {
+    vec![".git".to_string(), "node_modules".to_string()]
+}
 
 fn main() -> Result<(),Box<dyn std::error::Error>> {
 
@@ -109,7 +116,7 @@ fn main() -> Result<(),Box<dyn std::error::Error>> {
         match command {
             Commands::FindDups => {
                 let path_buf = config.search_path;
-                find_dups(&path_buf, &pool).await?;
+                find_dups(&path_buf, &pool, &config.ignore_list).await?;
                 eprintln!("Exporting duplicates...");
                 export_dups(&pool,&config.result_output_path).await?;
             }
