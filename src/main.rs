@@ -1,14 +1,12 @@
 use std::{fs, path::PathBuf};
-use std::cmp::{max, min};
+use std::cmp::min;
 use clap::{Parser, Subcommand};
-use log::debug;
 //use dotenvy::dotenv;
 use dup_file_finder::dup_finder::{delete_not_found, export_dups, find_dups, CONCURRENCY_LIMIT};
 use sqlx::SqlitePool;
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
 use tokio::runtime;
-use tokio::runtime::Handle;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
